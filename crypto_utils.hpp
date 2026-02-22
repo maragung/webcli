@@ -19,15 +19,10 @@
     You are free to remove this exemption from derived works.
 
     Copyright 2025-2026 Octra Labs
-
-              2025-2026 lambda0xe
-              dev[at]octra.org
-
-              2025-2026 Aleksandr Tsereteli
-              alex[at]octra.org
-              
+              2025-2026 David A.
+              2025-2026 Alex T.
               2025-2026 Vadim S.
-              2025-2026 Julia Lezra
+              2025-2026 Julia L.
 */
 
 #pragma once
