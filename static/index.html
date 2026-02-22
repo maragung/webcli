@@ -1,0 +1,249 @@
+<!--
+    This file is part of Octra Wallet (webcli).
+
+    Octra Wallet is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 2 of the License, or
+    (at your option) any later version.
+
+    Octra Wallet is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Octra Wallet.  If not, see <http://www.gnu.org/licenses/>.
+
+    This program is released under the GPL with the additional exemption
+    that compiling, linking, and/or using OpenSSL is allowed.
+    You are free to remove this exemption from derived works.
+
+    Copyright 2025-2026 Octra Labs
+
+              2025-2026 lambda0xe
+              dev[at]octra.org
+
+              2025-2026 Aleksandr Tsereteli
+              alex[at]octra.org
+              
+              2025-2026 Vadim S.
+              2025-2026 Julia Lezra
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>octra_wallet</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="modal-overlay" style="display:none">
+  <div id="modal-box">
+    <div id="modal-title">octra_wallet</div>
+    <div id="modal-sub">no wallet found</div>
+    <div id="modal-btns">
+      <button class="action-btn" onclick="modalShowImport()">import</button>
+      <button class="action-btn" onclick="modalCreate()">create new</button>
+    </div>
+    <div id="modal-import" style="display:none">
+      <div class="form-row">
+        <label>private key (base64)</label>
+        <textarea id="modal-privkey" rows="3" placeholder="paste base64 private key..."></textarea>
+      </div>
+      <div class="action-row">
+        <button class="action-btn" onclick="modalDoImport()">import</button>
+        <button class="action-btn" style="background:#8C9DB6" onclick="modalBack()">back</button>
+      </div>
+    </div>
+    <div id="modal-pin" style="display:none">
+      <div class="form-row">
+        <label>enter 6-digit PIN to unlock</label>
+        <input type="password" id="modal-pin-input" maxlength="6" inputmode="numeric" placeholder="------" autocomplete="off">
+      </div>
+      <div class="action-row">
+        <button class="action-btn" onclick="modalUnlock()">unlock</button>
+      </div>
+    </div>
+    <div id="modal-pin-setup" style="display:none">
+      <div class="form-row">
+        <label>create a 6-digit PIN</label>
+        <input type="password" id="modal-pin-new" maxlength="6" inputmode="numeric" placeholder="------" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <label>confirm PIN</label>
+        <input type="password" id="modal-pin-confirm" maxlength="6" inputmode="numeric" placeholder="------" autocomplete="off">
+      </div>
+      <div class="action-row">
+        <button class="action-btn" onclick="modalFinishSetup()">set PIN</button>
+        <button class="action-btn" style="background:#8C9DB6" onclick="modalBackFromPin()">back</button>
+      </div>
+    </div>
+    <div id="modal-result"></div>
+  </div>
+</div>
+
+<div class="wrap">
+
+<header>
+  <div class="left">
+    <div class="title">octra_wallet</div>
+    <div class="subtitle" id="hdr-addr">loading...</div>
+  </div>
+  <div class="hdr-right-group">
+    <div class="right" id="hdr-status">connecting...</div>
+    <button class="right logout-btn" id="hdr-logout" onclick="doLogout()" style="display:none">logout</button>
+  </div>
+</header>
+
+<div class="nav-tabs">
+  <a href="#" class="active" onclick="switchView('dashboard');return false">dashboard</a>
+  <a href="#" onclick="switchView('send');return false">send</a>
+  <a href="#" onclick="switchView('encrypt');return false">encrypt/decrypt</a>
+  <a href="#" onclick="switchView('stealth');return false">stealth</a>
+  <a href="#" onclick="switchView('history');return false">history</a>
+  <a href="#" onclick="switchView('keys');return false">keys</a>
+  <a href="#" onclick="switchView('settings');return false">settings</a>
+</div>
+
+<div class="content-area">
+
+  <div class="view active" id="view-dashboard">
+    <div class="stats-row">
+      <div class="stat-box"><div class="label">public balance</div><div class="value" id="st-balance">-</div></div>
+      <div class="stat-box"><div class="label">encrypted balance</div><div class="value" id="st-enc-balance">-</div></div>
+      <div class="stat-box"><div class="label">nonce</div><div class="value" id="st-nonce">-</div></div>
+      <div class="stat-box"><div class="label">staging</div><div class="value" id="st-staging">-</div></div>
+    </div>
+    <div class="section">
+      <div class="section-title">recent transactions</div>
+      <div id="dash-txs"><div class="loading">loading...</div></div>
+    </div>
+  </div>
+
+  <div class="view" id="view-send">
+    <div class="balance-strip">
+      <span class="bal-label">available:</span> <span id="send-bal" class="mono">-</span>
+    </div>
+    <div class="section-title">send oct</div>
+    <div class="form-area">
+      <div class="form-row">
+        <label>recipient address</label>
+        <input type="text" id="send-to" placeholder="oct...">
+      </div>
+      <div class="form-row">
+        <label>amount (oct)</label>
+        <input type="text" id="send-amount" placeholder="0.000000">
+      </div>
+      <div class="form-row">
+        <label>message (optional)</label>
+        <input type="text" id="send-msg" placeholder="">
+      </div>
+      <div class="action-row">
+        <button class="action-btn" onclick="doSend()">send</button>
+      </div>
+      <div id="send-result"></div>
+    </div>
+  </div>
+
+  <div class="view" id="view-encrypt">
+    <div class="balance-strip">
+      <span class="bal-label">public balance:</span> <span id="enc-pub-bal" class="mono">-</span>
+      <span class="bal-sep">|</span>
+      <span class="bal-label">encrypted balance:</span> <span id="enc-enc-bal" class="mono">-</span>
+    </div>
+    <div class="form-split">
+      <div class="form-panel">
+        <div class="form-panel-title">encrypt</div>
+        <div class="form-row">
+          <label>amount to encrypt (oct)</label>
+          <input type="text" id="enc-amount" placeholder="0.000000">
+        </div>
+        <div class="action-row">
+          <button class="action-btn" onclick="doEncrypt()">encrypt</button>
+        </div>
+        <div id="enc-result"></div>
+      </div>
+      <div class="form-panel">
+        <div class="form-panel-title">decrypt</div>
+        <div class="form-row">
+          <label>amount to decrypt (oct)</label>
+          <input type="text" id="dec-amount" placeholder="0.000000">
+        </div>
+        <div class="action-row">
+          <button class="action-btn" onclick="doDecrypt()">decrypt</button>
+        </div>
+        <div id="dec-result"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="view" id="view-stealth">
+    <div class="balance-strip">
+      <span class="bal-label">encrypted balance:</span> <span id="st-enc-bal-info" class="mono">-</span>
+    </div>
+    <div class="section-title">stealth send</div>
+    <div class="form-area">
+      <div class="form-row">
+        <label>recipient address</label>
+        <input type="text" id="stealth-to" placeholder="oct...">
+      </div>
+      <div class="form-row">
+        <label>amount (oct)</label>
+        <input type="text" id="stealth-amount" placeholder="0.000000">
+      </div>
+      <div class="action-row">
+        <button class="action-btn" onclick="doStealthSend()">stealth send</button>
+      </div>
+    </div>
+    <div class="section-title">stealth outputs</div>
+    <div class="action-row" style="padding:8px 10px">
+      <button class="action-btn" onclick="doStealthScan()">scan</button>
+    </div>
+    <div class="stealth-outputs-area">
+      <div id="stealth-outputs"><div class="mempool-empty">no outputs scanned yet</div></div>
+    </div>
+  </div>
+
+  <div class="view" id="view-history">
+    <div class="section-title">transaction history</div>
+    <div id="history-list"><div class="loading">loading...</div></div>
+    <div id="history-more"></div>
+  </div>
+
+  <div class="view" id="view-keys">
+    <div class="section-title">wallet keys</div>
+    <div class="keys-warn">private key is sensitive - do not share</div>
+    <div id="keys-table"><div class="loading">loading...</div></div>
+  </div>
+
+  <div class="view" id="view-settings">
+    <div class="section-title">node settings</div>
+    <div class="form-area">
+      <div class="form-row">
+        <label>rpc url</label>
+        <input type="text" id="settings-rpc" placeholder="http://165.227.225.79:8080">
+      </div>
+      <div class="action-row">
+        <button class="action-btn" onclick="doSaveSettings()">save</button>
+      </div>
+      <div id="settings-result"></div>
+    </div>
+  </div>
+
+  <div class="view" id="view-tx">
+    <a href="#" class="back-link" onclick="goBack();return false">&larr; back</a>
+    <div class="section-title">transaction</div>
+    <div id="tx-detail"><div class="loading">loading...</div></div>
+  </div>
+
+</div>
+
+<div class="footer">octra_wallet | 2026 | alpha ver. - 0.03.12</div>
+
+</div>
+<script src="wallet.js"></script>
+</body>
+</html>
