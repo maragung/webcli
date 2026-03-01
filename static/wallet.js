@@ -53,8 +53,11 @@ function updateStealthBadge(count) {
   }
 }
 
+
+/// 
 async function bgStealthScan() {
   try {
+
     var res = await api('GET', '/stealth/scan');
     var outputs = res.outputs || [];
     var unclaimed = 0;
@@ -65,6 +68,7 @@ async function bgStealthScan() {
     updateStealthBadge(unclaimed);
   } catch (e) {}
 }
+//// 
 
 async function fetchBalance() {
   try {
@@ -100,15 +104,23 @@ async function api(method, path, body) {
 
 
 
+///   for the error log if there is one
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
   var res = await fetch('/api' + path, opts);
-  var j = await res.json();
+  var text = await res.text();
+  if (!text || text.length === 0) throw new Error('empty response from RPC (possible timeout)');
+  var j;
+  try { j = JSON.parse(text); } catch (e) { throw new Error('invalid server response: ' + text.substring(0, 200)); }
   if (!res.ok) throw new Error(j.error || j.message || 'request failed');
   return j;
 }
+
+
+
+
 
 function switchView(name) {
   if (name !== 'tx') _prevView = name;
@@ -517,6 +529,11 @@ async function doStealthScan() {
   }
 }
 
+
+
+
+
+
 function claimSelected() {
   var checks = document.querySelectorAll('.stealth-chk:checked');
   var ids = [];
@@ -701,6 +718,11 @@ function modalBack() {
   $('modal-btns').style.display = 'flex';
 }
 
+
+
+
+
+
 function modalBackFromPin() {
   _pendingAction = null;
   _pendingPriv = '';
@@ -834,6 +856,7 @@ async function init() {
         $('modal-sub').textContent = 'enter PIN to unlock';
         showPinEntry();
       }
+
       $('modal-overlay').style.display = 'flex';
       return;
     }
@@ -844,6 +867,9 @@ async function init() {
     $('modal-overlay').style.display = 'flex';
   }
 }
+
+
+
 
 $('modal-pin-input').addEventListener('keydown', function(e) {
   if (e.key === 'Enter') modalUnlock();

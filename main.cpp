@@ -723,6 +723,8 @@ int main(int argc, char** argv) {
             return;
         }
 
+        try {
+
         json steps = json::array();
 
         steps.push_back("[1/8] ECDH x25519 key exchange");
@@ -817,6 +819,16 @@ int main(int argc, char** argv) {
         if (result.contains("error")) res.status = 500;
         result["steps"] = steps;
         res.set_content(result.dump(), "application/json");
+
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[stealth/send] exception: %s\n", e.what());
+            res.status = 500;
+            res.set_content(err_json(std::string("stealth send failed: ") + e.what()).dump(), "application/json");
+        } catch (...) {
+            fprintf(stderr, "[stealth/send] unknown exception\n");
+            res.status = 500;
+            res.set_content(err_json("stealth send failed: unknown error").dump(), "application/json");
+        }
     });
 
     svr.Get("/api/stealth/scan", [](const httplib::Request&, httplib::Response& res) {

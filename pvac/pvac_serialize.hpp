@@ -5,6 +5,7 @@
 #include <vector>
 #include <stdexcept>
 #include "pvac/pvac.hpp"
+#include "pvac/core/pvac_compress.hpp"
 
 namespace pvac_ser {
 
@@ -345,7 +346,7 @@ inline pvac::Cipher deserialize_cipher(const uint8_t* data, size_t len) {
     return C;
 }
 
-inline std::vector<uint8_t> serialize_pubkey(const pvac::PubKey& pk) {
+inline std::vector<uint8_t> serialize_pubkey_raw(const pvac::PubKey& pk) {
     Writer w;
     w.header(TAG_PUBKEY);
     write_params(w, pk.prm);
@@ -368,7 +369,13 @@ inline std::vector<uint8_t> serialize_pubkey(const pvac::PubKey& pk) {
     return std::move(w.buf);
 }
 
-inline pvac::PubKey deserialize_pubkey(const uint8_t* data, size_t len) {
+inline std::vector<uint8_t> serialize_pubkey(const pvac::PubKey& pk, bool compressed = true) {
+    auto raw = serialize_pubkey_raw(pk);
+    if (!compressed) return raw;
+    return pvac::compress::pack(raw);
+}
+
+inline pvac::PubKey deserialize_pubkey_raw(const uint8_t* data, size_t len) {
     Reader r(data, len);
     r.header(TAG_PUBKEY);
     pvac::PubKey pk;
@@ -408,6 +415,14 @@ inline pvac::PubKey deserialize_pubkey(const uint8_t* data, size_t len) {
 
     if (r.failed) throw std::runtime_error(r.error);
     return pk;
+}
+
+inline pvac::PubKey deserialize_pubkey(const uint8_t* data, size_t len) {
+    if (pvac::compress::is_packed(data, len)) {
+        auto raw = pvac::compress::unpack(data, len);
+        return deserialize_pubkey_raw(raw.data(), raw.size());
+    }
+    return deserialize_pubkey_raw(data, len);
 }
 
 inline std::vector<uint8_t> serialize_seckey(const pvac::SecKey& sk) {
@@ -608,7 +623,6 @@ inline pvac::RangeProof deserialize_range_proof(const uint8_t* data, size_t len)
     return rp;
 }
 
-
 inline std::vector<uint8_t> serialize_agg_range_proof(const pvac::AggregatedRangeProof& arp) {
     Writer w;
     w.header(TAG_AGG_RANGE_PROOF);
@@ -636,7 +650,6 @@ inline pvac::AggregatedRangeProof deserialize_agg_range_proof(const uint8_t* dat
     if (r.failed) throw std::runtime_error(r.error);
     return arp;
 }
-
 
 enum RangeProofFormat { RP_OLD = 0, RP_AGGREGATED = 1 };
 
