@@ -313,7 +313,7 @@ function doSwap() {
   $('confirm-detail').innerHTML =
     '<div class="cd-row"><span>you pay</span><span class="cd-val">' + esc(payStr) + '</span></div>' +
     '<div class="cd-row"><span>you receive</span><span class="cd-val">' + esc(receiveStr) + '</span></div>' +
-    '<div class="cd-row"><span>fee</span><span class="cd-val">100 OCT</span></div>';
+    '<div class="cd-row"><span>fee</span><span class="cd-val">0.1 OCT</span></div>';
   $('confirm-modal').className = 'modal-bg show';
 }
 
