@@ -141,12 +141,19 @@ public:
     RpcResult register_pvac_pubkey(const std::string& addr,
                                    const std::string& pk_b64,
                                    const std::string& sig_b64,
-                                   const std::string& pub_b64) {
-        return call("octra_registerPvacPubkey", {addr, pk_b64, sig_b64, pub_b64});
+                                   const std::string& pub_b64,
+                                   const std::string& aes_kat_hex = "") {
+        return call("octra_registerPvacPubkey", {addr, pk_b64, sig_b64, pub_b64, aes_kat_hex});
     }
 
     RpcResult get_pvac_pubkey(const std::string& addr) {
         return call("octra_pvacPubkey", {addr});
+    }
+
+    RpcResult register_public_key(const std::string& addr,
+                                   const std::string& pub_b64,
+                                   const std::string& sig_b64) {
+        return call("octra_registerPublicKey", {addr, pub_b64, sig_b64});
     }
 
     RpcResult get_stealth_outputs(int from_epoch = 0) {
