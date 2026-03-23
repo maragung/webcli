@@ -2,7 +2,7 @@
 ![Version](https://img.shields.io/badge/version-0.04.10--alpha-blue)
 
 
-a full-fledged web client based on a local server for working with the octra network (currently available only for **DEVNET** and not compatible with the main network for RPC calls, but will be merged soon).
+a full-fledged web client based on a local server for working with the octra network (compatible with both **DEVNET** and **MAINNET ALPHA**).
 
 you can send txs, encrypt and decrypt balances, conduct stealth txs, and much more
 
