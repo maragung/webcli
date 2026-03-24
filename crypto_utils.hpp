@@ -147,7 +147,7 @@ inline std::array<uint8_t, 32> sha256(const uint8_t* data, size_t len) {
 
     std::array<uint8_t, 32> out;
     for (int i = 0; i < 8; i++) {
-        out[i * 4]     = (uint8_t)(h[i] >> 24);
+        out[i * 4] = (uint8_t)(h[i] >> 24);
         out[i * 4 + 1] = (uint8_t)(h[i] >> 16);
         out[i * 4 + 2] = (uint8_t)(h[i] >> 8);
         out[i * 4 + 3] = (uint8_t)(h[i]);

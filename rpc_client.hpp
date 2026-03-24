@@ -172,6 +172,16 @@ public:
         return call("octra_compileAml", {source}, 10);
     }
 
+
+    // rpc compl 
+
+    RpcResult compile_aml_multi(const nlohmann::json& files, const std::string& main_path) {
+        nlohmann::json payload;
+        payload["files"] = files;
+        payload["main"] = main_path;
+        return call("octra_compileAmlMulti", nlohmann::json::array({payload}), 15);
+    }
+
     RpcResult compute_contract_address(const std::string& bytecode_b64,
                                         const std::string& deployer,
                                         int nonce = 0) {

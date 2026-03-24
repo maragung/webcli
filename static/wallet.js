@@ -25,6 +25,81 @@
               2025-2026 Julia L.
 */
 
+
+// mini-IDE pop up promt window with all things inside [lambda0xe]
+
+function idePrompt(title, message, defaultVal) {
+  return new Promise(function(resolve) {
+    var ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML = '<div class="modal-box">' +
+      '<div class="modal-title">' + title + '</div>' +
+      (message ? '<div class="modal-message">' + message + '</div>' : '') +
+      '<input class="modal-input" type="text" value="' + (defaultVal || '') + '">' +
+      '<div class="modal-buttons">' +
+        '<button class="modal-btn" data-action="cancel">cancel</button>' +
+        '<button class="modal-btn modal-btn-primary" data-action="ok">ok</button>' +
+      '</div></div>';
+    document.body.appendChild(ov);
+    var inp = ov.querySelector('.modal-input');
+    inp.focus(); inp.select();
+    inp.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { document.body.removeChild(ov); resolve(inp.value); }
+      if (e.key === 'Escape') { document.body.removeChild(ov); resolve(null); }
+    });
+    ov.addEventListener('click', function(e) {
+      var a = e.target.getAttribute('data-action');
+      if (a === 'ok') { document.body.removeChild(ov); resolve(inp.value); }
+      if (a === 'cancel' || e.target === ov) { document.body.removeChild(ov); resolve(null); }
+    });
+  });
+}
+function ideConfirm(title, message) {
+  return new Promise(function(resolve) {
+    var ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.innerHTML = '<div class="modal-box">' +
+      '<div class="modal-title">' + title + '</div>' +
+      '<div class="modal-message">' + message + '</div>' +
+      '<div class="modal-buttons">' +
+        '<button class="modal-btn" data-action="cancel">cancel</button>' +
+        '<button class="modal-btn modal-btn-primary" data-action="ok">confirm</button>' +
+      '</div></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', function(e) {
+      var a = e.target.getAttribute('data-action');
+      if (a === 'ok') { document.body.removeChild(ov); resolve(true); }
+      if (a === 'cancel' || e.target === ov) { document.body.removeChild(ov); resolve(false); }
+    });
+    ov.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { document.body.removeChild(ov); resolve(true); }
+      if (e.key === 'Escape') { document.body.removeChild(ov); resolve(false); }
+    });
+    ov.focus();
+  });
+}
+function ideMenu(title, options) {
+  return new Promise(function(resolve) {
+    var ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    var btns = options.map(function(o, i) {
+      return '<button class="modal-btn" data-idx="' + i + '" style="width:100%;text-align:left;margin-bottom:4px">' + o.label + '</button>';
+    }).join('');
+    ov.innerHTML = '<div class="modal-box">' +
+      '<div class="modal-title">' + title + '</div>' +
+      btns +
+      '<div class="modal-buttons" style="margin-top:8px">' +
+        '<button class="modal-btn" data-action="cancel">cancel</button>' +
+      '</div></div>';
+    document.body.appendChild(ov);
+    ov.addEventListener('click', function(e) {
+      var idx = e.target.getAttribute('data-idx');
+      if (idx !== null) { document.body.removeChild(ov); resolve(options[parseInt(idx)].value); return; }
+      if (e.target.getAttribute('data-action') === 'cancel' || e.target === ov) { document.body.removeChild(ov); resolve(null); }
+    });
+  });
+}
+
 var _walletAddr = '';
 var _historyOffset = 0;
 var _historyLimit = 20;
@@ -45,6 +120,638 @@ var _compiledAbi = null;
 var _fees = {};
 var _rpcHost = '';
 var _hasMasterSeed = false;
+
+
+var _ideProject = null;  // { id, name, created, template }
+var _ideFiles = {};       // { path: content }
+var _ideActiveFile = null;
+var _ideOpenTabs = [];
+var _ideSaveTimer = null;
+var _ideMode = false;     // false=single file, true=project mode
+
+var ProjectStore = (function() {
+  var DB_NAME = 'octra_ide';
+  var DB_VERSION = 1;
+  var db = null;
+
+  function open() {
+    return new Promise(function(resolve, reject) {
+      if (db) { resolve(db); return; }
+      var req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = function(e) {
+        var d = e.target.result;
+        if (!d.objectStoreNames.contains('projects')) {
+          d.createObjectStore('projects', { keyPath: 'id' });
+        }
+        if (!d.objectStoreNames.contains('files')) {
+          var fs = d.createObjectStore('files', { keyPath: 'key' });
+          fs.createIndex('project', 'project_id', { unique: false });
+        }
+      };
+      req.onsuccess = function(e) { db = e.target.result; resolve(db); };
+      req.onerror = function(e) { reject(e.target.error); };
+    });
+  }
+
+  function tx(stores, mode) {
+    return db.transaction(stores, mode);
+  }
+
+  return {
+    createProject: async function(name, template) {
+      await open();
+      var id = 'prj_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+      var proj = { id: id, name: name, created: Date.now(), template: template || 'empty' };
+      return new Promise(function(resolve, reject) {
+        var t = tx(['projects'], 'readwrite');
+        t.objectStore('projects').put(proj);
+        t.oncomplete = function() { resolve(proj); };
+        t.onerror = function(e) { reject(e.target.error); };
+      });
+    },
+
+    listProjects: async function() {
+      await open();
+      return new Promise(function(resolve, reject) {
+        var t = tx(['projects'], 'readonly');
+        var req = t.objectStore('projects').getAll();
+        req.onsuccess = function() { resolve(req.result || []); };
+        req.onerror = function(e) { reject(e.target.error); };
+      });
+    },
+
+    deleteProject: async function(id) {
+      await open();
+      return new Promise(function(resolve, reject) {
+        var t = tx(['projects', 'files'], 'readwrite');
+        t.objectStore('projects').delete(id);
+        var idx = t.objectStore('files').index('project');
+        var cur = idx.openCursor(IDBKeyRange.only(id));
+        cur.onsuccess = function(e) {
+          var c = e.target.result;
+          if (c) { c.delete(); c.continue(); }
+        };
+        t.oncomplete = function() { resolve(); };
+        t.onerror = function(e) { reject(e.target.error); };
+      });
+    },
+
+    saveFile: async function(projectId, path, content) {
+      await open();
+      var key = projectId + '::' + path;
+      return new Promise(function(resolve, reject) {
+        var t = tx(['files'], 'readwrite');
+        t.objectStore('files').put({ key: key, project_id: projectId, path: path, content: content });
+        t.oncomplete = function() { resolve(); };
+        t.onerror = function(e) { reject(e.target.error); };
+      });
+    },
+
+    getFile: async function(projectId, path) {
+      await open();
+      var key = projectId + '::' + path;
+      return new Promise(function(resolve, reject) {
+        var t = tx(['files'], 'readonly');
+        var req = t.objectStore('files').get(key);
+        req.onsuccess = function() { resolve(req.result ? req.result.content : null); };
+        req.onerror = function(e) { reject(e.target.error); };
+      });
+    },
+
+    listFiles: async function(projectId) {
+      await open();
+      return new Promise(function(resolve, reject) {
+        var t = tx(['files'], 'readonly');
+        var idx = t.objectStore('files').index('project');
+        var req = idx.getAll(IDBKeyRange.only(projectId));
+        req.onsuccess = function() {
+          resolve((req.result || []).map(function(f) { return f.path; }));
+        };
+        req.onerror = function(e) { reject(e.target.error); };
+      });
+    },
+
+    deleteFile: async function(projectId, path) {
+      await open();
+      var key = projectId + '::' + path;
+      return new Promise(function(resolve, reject) {
+        var t = tx(['files'], 'readwrite');
+        t.objectStore('files').delete(key);
+        t.oncomplete = function() { resolve(); };
+        t.onerror = function(e) { reject(e.target.error); };
+      });
+    },
+
+    getAllFiles: async function(projectId) {
+      await open();
+      return new Promise(function(resolve, reject) {
+        var t = tx(['files'], 'readonly');
+        var idx = t.objectStore('files').index('project');
+        var req = idx.getAll(IDBKeyRange.only(projectId));
+        req.onsuccess = function() {
+          var map = {};
+          (req.result || []).forEach(function(f) { map[f.path] = f.content; });
+          resolve(map);
+        };
+        req.onerror = function(e) { reject(e.target.error); };
+      });
+    }
+  };
+})();
+
+var _templateIndex = null;
+async function loadTemplateIndex() {
+  if (_templateIndex) return _templateIndex;
+  try {
+    var r = await fetch('templates/index.json');
+    _templateIndex = await r.json();
+  } catch (e) { _templateIndex = {}; }
+  return _templateIndex;
+}
+async function fetchTemplateFiles(key) {
+  var idx = await loadTemplateIndex();
+  var tpl = idx[key];
+  if (!tpl) return null;
+  var files = {};
+  for (var i = 0; i < tpl.files.length; i++) {
+    var path = tpl.files[i];
+    try {
+      var r = await fetch('templates/' + key + '/' + path);
+      files[path] = await r.text();
+    } catch (e) { files[path] = ''; }
+  }
+  return { name: tpl.name, files: files };
+}
+
+var PROJECT_TEMPLATES = {
+  empty: { name: 'Empty Project', files: { 'main.aml': 'contract MyContract {\n  state { owner: address }\n  constructor() {\n    self.owner = caller\n  }\n}' } },
+  token: { name: 'OCS01 Token', files: { 'main.aml': '' } },
+  vault: { name: 'Vault', files: { 'main.aml': '' } }
+};
+
+async function ideOpenProject(proj) {
+  _ideProject = proj;
+  _ideFiles = await ProjectStore.getAllFiles(proj.id);
+  _ideOpenTabs = [];
+  _ideActiveFile = null;
+  _ideMode = true;
+
+  var mainFile = 'main.aml';
+  if (!_ideFiles[mainFile]) {
+    var paths = Object.keys(_ideFiles);
+    mainFile = paths.length > 0 ? paths[0] : null;
+  }
+  if (mainFile) {
+    _ideOpenTabs = [mainFile];
+    _ideActiveFile = mainFile;
+  }
+
+  ideRenderAll();
+  updateVerifyUI();
+}
+
+function updateVerifyUI() {
+  var single = $('ct-verify-single');
+  var proj = $('ct-verify-project');
+  var projFiles = $('ct-verify-project-files');
+  if (!single || !proj) return;
+  if (_ideProject && _ideFiles) {
+    single.style.display = 'none';
+    proj.style.display = '';
+    var paths = Object.keys(_ideFiles);
+    projFiles.innerHTML = paths.map(function(p) { return '<span class="ide-icon ide-file-icon"></span>' + escapeHtml(p); }).join('<br>');
+  } else {
+    single.style.display = '';
+    proj.style.display = 'none';
+  }
+}
+
+function ideRenderAll() {
+  ideRenderProjectBar();
+  ideRenderFileTree();
+  ideRenderTabs();
+  ideLoadActiveFile();
+}
+
+function ideRenderProjectBar() {
+  var bar = $('ide-project-bar');
+  if (!bar) return;
+  if (!_ideProject) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  bar.innerHTML = '<span class="ide-project-name">' + escapeHtml(_ideProject.name) + '</span>' +
+    '<button class="ide-btn" onclick="ideCloseProject()" title="close project"><span class="ide-icon ico-close"></span></button>' +
+    '<button class="ide-btn" onclick="ideExportZip()" title="export zip"><span class="ide-icon ico-download"></span></button>';
+}
+
+function ideRenderFileTree() {
+  var tree = $('ide-file-tree');
+  if (!tree) return;
+  if (!_ideProject) {
+    tree.style.display = 'none';
+    return;
+  }
+  tree.style.display = 'block';
+  var paths = Object.keys(_ideFiles).sort();
+  var dirs = {};
+  var rootFiles = [];
+  paths.forEach(function(p) {
+    var slash = p.indexOf('/');
+    if (slash > 0) {
+      var dir = p.substring(0, slash);
+      if (!dirs[dir]) dirs[dir] = [];
+      dirs[dir].push(p);
+    } else {
+      rootFiles.push(p);
+    }
+  });
+
+
+
+
+  var html = '<div class="ide-tree-header">files <button class="ide-btn-small" onclick="ideNewFile()"><span class="ide-icon ico-plus"></span></button>' +
+    '<label class="ide-btn-small" style="cursor:pointer" title="import .aml files"><span class="ide-icon ico-upload"></span><input type="file" accept=".aml,.json,.aml-project.json" multiple style="display:none" onchange="ideImportFiles(this.files)"></label>' +
+    '<label class="ide-btn-small" style="cursor:pointer" title="import folder"><span class="ide-icon ico-folder-import"></span><input type="file" webkitdirectory style="display:none" onchange="ideImportFiles(this.files)"></label></div>';
+  
+  
+  
+  
+    rootFiles.forEach(function(p) {
+    var cls = p === _ideActiveFile ? ' active' : '';
+    html += '<div class="ide-tree-file' + cls + '" onclick="ideOpenFile(\'' + escapeHtml(p) + '\')" oncontextmenu="ideFileMenu(event,\'' + escapeHtml(p) + '\')">' +
+      '<span class="ide-icon ide-file-icon"></span>' + escapeHtml(p) + '</div>';
+  });
+  Object.keys(dirs).sort().forEach(function(dir) {
+    html += '<div class="ide-tree-dir"><span class="ide-icon ide-dir-icon"></span>' + escapeHtml(dir) + '</div>';
+    dirs[dir].sort().forEach(function(p) {
+      var fname = p.substring(p.indexOf('/') + 1);
+      var cls = p === _ideActiveFile ? ' active' : '';
+      html += '<div class="ide-tree-file ide-tree-nested' + cls + '" onclick="ideOpenFile(\'' + escapeHtml(p) + '\')" oncontextmenu="ideFileMenu(event,\'' + escapeHtml(p) + '\')">' +
+        '<span class="ide-icon ide-file-icon"></span>' + escapeHtml(fname) + '</div>';
+    });
+  });
+  tree.innerHTML = html;
+}
+
+function ideRenderTabs() {
+  var bar = $('ide-tabs');
+  if (!bar) return;
+  if (!_ideProject || _ideOpenTabs.length === 0) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  var html = '';
+  _ideOpenTabs.forEach(function(path) {
+    var name = path.indexOf('/') >= 0 ? path.substring(path.lastIndexOf('/') + 1) : path;
+    var cls = path === _ideActiveFile ? ' active' : '';
+    html += '<div class="ide-tab' + cls + '" onclick="ideOpenFile(\'' + escapeHtml(path) + '\')">' +
+      escapeHtml(name) +
+      '<span class="ide-tab-close" onclick="event.stopPropagation();ideCloseTab(\'' + escapeHtml(path) + '\')">×</span>' +
+      '</div>';
+  });
+  bar.innerHTML = html;
+}
+
+function ideLoadActiveFile() {
+  var ta = $('ct-source');
+  if (!ta) return;
+  if (_ideActiveFile && _ideFiles[_ideActiveFile] !== undefined) {
+    ta.value = _ideFiles[_ideActiveFile];
+  } else {
+    ta.value = '';
+  }
+  editorUpdate();
+}
+
+function ideOpenFile(path) {
+  ideSaveCurrentFile();
+  if (_ideOpenTabs.indexOf(path) < 0) {
+    _ideOpenTabs.push(path);
+  }
+  _ideActiveFile = path;
+  ideRenderFileTree();
+  ideRenderTabs();
+  ideLoadActiveFile();
+}
+
+function ideCloseTab(path) {
+  ideSaveCurrentFile();
+  var idx = _ideOpenTabs.indexOf(path);
+  if (idx >= 0) _ideOpenTabs.splice(idx, 1);
+  if (_ideActiveFile === path) {
+    _ideActiveFile = _ideOpenTabs.length > 0 ? _ideOpenTabs[Math.max(0, idx - 1)] : null;
+  }
+  ideRenderTabs();
+  ideRenderFileTree();
+  ideLoadActiveFile();
+}
+
+function ideSaveCurrentFile() {
+  if (!_ideProject || !_ideActiveFile) return;
+  var ta = $('ct-source');
+  if (!ta) return;
+  _ideFiles[_ideActiveFile] = ta.value;
+  ProjectStore.saveFile(_ideProject.id, _ideActiveFile, ta.value).catch(function() {});
+}
+
+async function ideNewFile() {
+  var name = await idePrompt('new file', 'e.g. utils.aml or interfaces/IToken.aml');
+  if (!name || !name.trim()) return;
+  name = name.trim();
+  if (_ideFiles[name] !== undefined) { alert('File already exists'); return; }
+  _ideFiles[name] = '';
+  await ProjectStore.saveFile(_ideProject.id, name, '');
+  ideOpenFile(name);
+}
+
+async function ideFileMenu(e, path) {
+  e.preventDefault();
+  var action = await ideMenu(path, [
+    {label: 'rename', value: 'rename'},
+    {label: 'delete', value: 'delete'}
+  ]);
+  if (action === 'rename') {
+    var newName = await idePrompt('rename file', '', path);
+    if (newName && newName !== path) ideRenameFile(path, newName);
+  } else if (action === 'delete') {
+    var ok = await ideConfirm('delete file', 'delete ' + path + '?');
+    if (ok) ideDeleteFile(path);
+  }
+}
+
+async function ideRenameFile(oldPath, newPath) {
+  if (_ideFiles[newPath] !== undefined) { alert('File already exists'); return; }
+  _ideFiles[newPath] = _ideFiles[oldPath] || '';
+  delete _ideFiles[oldPath];
+  await ProjectStore.saveFile(_ideProject.id, newPath, _ideFiles[newPath]);
+  await ProjectStore.deleteFile(_ideProject.id, oldPath);
+  var idx = _ideOpenTabs.indexOf(oldPath);
+  if (idx >= 0) _ideOpenTabs[idx] = newPath;
+  if (_ideActiveFile === oldPath) _ideActiveFile = newPath;
+  ideRenderAll();
+}
+
+async function ideDeleteFile(path) {
+  delete _ideFiles[path];
+  await ProjectStore.deleteFile(_ideProject.id, path);
+  var idx = _ideOpenTabs.indexOf(path);
+  if (idx >= 0) _ideOpenTabs.splice(idx, 1);
+  if (_ideActiveFile === path) {
+    _ideActiveFile = _ideOpenTabs.length > 0 ? _ideOpenTabs[0] : null;
+  }
+  ideRenderAll();
+}
+
+function ideCloseProject() {
+  ideSaveCurrentFile();
+  _ideProject = null;
+  _ideFiles = {};
+  _ideActiveFile = null;
+  _ideOpenTabs = [];
+  _ideMode = false;
+  var tree = $('ide-file-tree');
+  if (tree) tree.style.display = 'none';
+  var bar = $('ide-project-bar');
+  if (bar) bar.style.display = 'none';
+  var tabs = $('ide-tabs');
+  if (tabs) tabs.style.display = 'none';
+  $('ct-source').value = '';
+  editorUpdate();
+  updateVerifyUI();
+  showProjectPicker();
+}
+
+async function showProjectPicker() {
+  var projects = await ProjectStore.listProjects();
+  var pp = $('ide-project-picker');
+  if (!pp) return;
+
+
+  var html = '<div class="ide-picker-title">projects</div>';
+  html += '<div class="ide-picker-section-label">new project</div>';
+  html += '<div class="ide-picker-actions">';
+  html += '<button class="action-btn" onclick="ideNewProject(\'empty\')"><span class="tpl-label">Blank</span><span class="tpl-desc">empty contract</span></button>';
+  html += '<button class="action-btn" onclick="ideNewProject(\'token\')"><span class="tpl-label">OCS-01 Token</span><span class="tpl-desc">fungible token</span></button>';
+  html += '<button class="action-btn" onclick="ideNewProject(\'vault\')"><span class="tpl-label">Vault</span><span class="tpl-desc">escrow contract</span></button>';
+  html += '</div>';
+  html += '<div class="ide-picker-import">';
+  html += '<label class="action-btn" style="cursor:pointer"><span class="ide-icon ico-upload"></span> import files<input type="file" accept=".json,.aml-project.json,.aml" multiple style="display:none" onchange="ideImportFiles(this.files)"></label>';
+  html += '<label class="action-btn" style="cursor:pointer"><span class="ide-icon ico-folder-import"></span> import folder<input type="file" webkitdirectory style="display:none" onchange="ideImportFiles(this.files)"></label>';
+  html += '</div>';
+
+
+  if (projects.length > 0) {
+    html += '<div class="ide-picker-list">';
+    html += '<div class="ide-picker-list-title">recent</div>';
+    projects.forEach(function(p) {
+      html += '<div class="ide-picker-item" onclick="ideLoadProject(\'' + p.id + '\')">' +
+        '<span class="ide-picker-name">' + escapeHtml(p.name) + '</span>' +
+        '<span class="ide-picker-date">' + new Date(p.created).toLocaleDateString() + '</span>' +
+        '<button class="ide-btn-small" onclick="event.stopPropagation();ideDeleteProject(\'' + p.id + '\')" title="delete"><span class="ide-icon ico-delete"></span></button>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+  pp.style.display = 'block';
+  pp.innerHTML = html;
+}
+
+async function ideNewProject(template) {
+  var tpl = await fetchTemplateFiles(template) || PROJECT_TEMPLATES[template] || PROJECT_TEMPLATES.empty;
+  var name = await idePrompt('new project', '', tpl.name);
+  if (!name || !name.trim()) return;
+  var proj = await ProjectStore.createProject(name.trim(), template);
+  var files = tpl.files;
+  for (var path in files) {
+    await ProjectStore.saveFile(proj.id, path, files[path]);
+  }
+  var pp = $('ide-project-picker');
+  if (pp) pp.style.display = 'none';
+  await ideOpenProject(proj);
+}
+
+async function ideLoadProject(id) {
+  var projects = await ProjectStore.listProjects();
+  var proj = projects.find(function(p) { return p.id === id; });
+  if (!proj) return;
+  var pp = $('ide-project-picker');
+  if (pp) pp.style.display = 'none';
+  await ideOpenProject(proj);
+}
+
+async function ideDeleteProject(id) {
+  var ok = await ideConfirm('delete project', 'delete this project? this cannot be undone.');
+  if (!ok) return;
+  await ProjectStore.deleteProject(id);
+  showProjectPicker();
+}
+
+async function ideExportZip() {
+  if (!_ideProject) return;
+  ideSaveCurrentFile();
+  var bundle = {
+    project: { name: _ideProject.name, template: _ideProject.template },
+    files: _ideFiles
+  };
+  var blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (_ideProject.name || 'project').replace(/[^a-zA-Z0-9_-]/g, '_') + '.aml-project.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function ideImportFiles(fileList) {
+  if (!fileList || fileList.length === 0) return;
+  var files = Array.from(fileList);
+
+  function getRelPath(f) {
+    var rel = f.webkitRelativePath || '';
+    if (rel) {
+      var slash = rel.indexOf('/');
+      if (slash >= 0) rel = rel.substring(slash + 1);
+    }
+    return rel || f.name;
+  }
+
+  var jsonFiles = files.filter(function(f) { return f.name.endsWith('.json'); });
+  if (jsonFiles.length === 1 && files.length === 1) {
+    var reader = new FileReader();
+    reader.onload = async function(e) {
+      try {
+        var bundle = JSON.parse(e.target.result);
+        if (!bundle.project || !bundle.files) { alert('Invalid project file'); return; }
+        var proj = await ProjectStore.createProject(
+          bundle.project.name || 'Imported',
+          bundle.project.template || 'empty'
+        );
+        for (var path in bundle.files) {
+          await ProjectStore.saveFile(proj.id, path, bundle.files[path]);
+        }
+        var pp = $('ide-project-picker');
+        if (pp) pp.style.display = 'none';
+        await ideOpenProject(proj);
+      } catch (err) {
+        alert('Import failed: ' + err.message);
+      }
+    };
+    reader.readAsText(jsonFiles[0]);
+    return;
+  }
+
+  var amlFiles = files.filter(function(f) { return f.name.endsWith('.aml'); });
+  if (amlFiles.length === 0) { alert('Select .aml or .aml-project.json files'); return; }
+
+  var folderName = '';
+  if (amlFiles[0].webkitRelativePath) {
+    folderName = amlFiles[0].webkitRelativePath.split('/')[0];
+  }
+  var projName = folderName || (amlFiles.length === 1 ? amlFiles[0].name.replace('.aml', '') : 'Imported');
+
+  if (_ideProject) {
+    for (var i = 0; i < amlFiles.length; i++) {
+      var content = await amlFiles[i].text();
+      var path = getRelPath(amlFiles[i]);
+      _ideFiles[path] = content;
+      await ProjectStore.saveFile(_ideProject.id, path, content);
+    }
+    ideRenderAll();
+    return;
+  }
+
+  var proj = await ProjectStore.createProject(projName, 'empty');
+  var hasMain = false;
+  for (var i = 0; i < amlFiles.length; i++) {
+    var content = await amlFiles[i].text();
+    var path = getRelPath(amlFiles[i]);
+    if (amlFiles.length === 1 && path !== 'main.aml') { path = 'main.aml'; }
+    if (path === 'main.aml') hasMain = true;
+    await ProjectStore.saveFile(proj.id, path, content);
+  }
+  if (!hasMain && amlFiles.length > 1) {
+    await ProjectStore.saveFile(proj.id, 'main.aml', '');
+  }
+  var pp = $('ide-project-picker');
+  if (pp) pp.style.display = 'none';
+  await ideOpenProject(proj);
+}
+
+async function doCompileProject() {
+  if (!_ideProject) { doCompile(); return; }
+  ideSaveCurrentFile();
+  clearResult('ct-compile-result');
+  editorClearError();
+  _compiledAbi = null;
+  var abiDiv = $('ct-abi-display');
+  if (abiDiv) abiDiv.style.display = 'none';
+
+  var files = [];
+  for (var path in _ideFiles) {
+    files.push({ path: path, source: _ideFiles[path] });
+  }
+  if (files.length === 0) {
+    showResult('ct-compile-result', false, 'no files in project');
+    return;
+  }
+  try {
+    var res = await api('POST', '/contract/compile-project', { files: files, main: 'main.aml' });
+    var b64 = res.bytecode || '';
+    $('ct-bytecode').value = b64;
+    var ver = res.version ? ('AppliedML ' + res.version + ' - ') : '';
+    var msg = ver + 'compiled: ' + res.instructions + ' instructions, ' + res.size + ' bytes (' + files.length + ' files)';
+    showResult('ct-compile-result', true, msg);
+    if (res.abi) {
+      _compiledAbi = res.abi;
+      if (abiDiv) {
+        $('ct-abi-json').textContent = JSON.stringify(res.abi, null, 2);
+        abiDiv.style.display = 'block';
+      }
+    }
+    if (res.disasm) {
+      var disEl = $('ct-disasm-code');
+      if (disEl) disEl.innerHTML = highlightDisasm(res.disasm);
+    }
+    showBottomPanels();
+    consoleLog('info', msg);
+  } catch (e) {
+    var errMsg = e.message || '';
+    var lineMatch = errMsg.match(/line\s+(\d+)/i);
+    if (lineMatch) editorMarkError(parseInt(lineMatch[1], 10));
+    showResult('ct-compile-result', false, errMsg);
+    consoleLog('error', 'compile error: ' + errMsg);
+  }
+}
+
+async function doVerifyProject() {
+  if (!_ideProject) { doVerifyContract(); return; }
+  ideSaveCurrentFile();
+  clearResult('ct-verify-result');
+  var addr = $('ct-verify-addr').value.trim();
+  if (!addr) { showResult('ct-verify-result', false, 'contract address required'); return; }
+
+  var mainSource = _ideFiles['main.aml'] || '';
+  if (!mainSource.trim()) { showResult('ct-verify-result', false, 'main.aml is empty'); return; }
+
+  var depFiles = [];
+  for (var path in _ideFiles) {
+    if (path !== 'main.aml') {
+      depFiles.push({ path: path, source: _ideFiles[path] });
+    }
+  }
+
+  try {
+    var payload = { address: addr, source: mainSource };
+    if (depFiles.length > 0) payload.files = depFiles;
+    var res = await api('POST', '/contract/verify', payload);
+    showResult('ct-verify-result', true,
+      'source verified - code_hash: <span class="mono">' + escapeHtml(res.code_hash || '') + '</span>');
+  } catch (e) {
+    showResult('ct-verify-result', false, e.message);
+  }
+}
 
 function networkLabel(host) {
   if (host === '46.101.86.250') return 'main net';
@@ -140,6 +847,13 @@ async function fetchFees() {
   } catch (e) {}
 }
 
+function ouToOct(ou) {
+  var n = parseInt(ou);
+  if (isNaN(n) || n <= 0) return '?';
+  var oct = n / 1000000;
+  return oct % 1 === 0 ? oct.toFixed(0) : oct.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
 function applyFeeDefaults() {
   var map = {
     'send-fee': 'standard',
@@ -161,6 +875,11 @@ function applyFeeDefaults() {
       }
       input.placeholder = 'min: ' + (fee.minimum || '?');
     }
+  }
+  var btnDeploy = $('btn-deploy');
+  if (btnDeploy && _fees.deploy) {
+    var cost = _fees.deploy.base_fee || _fees.deploy.recommended;
+    btnDeploy.textContent = 'deploy (' + ouToOct(cost) + ' oct)';
   }
 }
 
@@ -204,6 +923,7 @@ var tabId = tabs[i].getAttribute('data-view');
   if (name === 'keys') showKeys();
   if (name === 'settings') loadSettings();
   if (name === 'send') refreshSendBalance();
+  if (name === 'dev' && !_ideProject) showProjectPicker();
   if (name === 'encrypt') refreshEncryptBalances();
   if (name === 'stealth') refreshStealthBalance();
   if (name === 'tokens') loadTokens();
@@ -352,6 +1072,25 @@ function logStealth(msg, cls) {
 
 function clearStealthLog() {
   var el = $('stealth-log');
+  if (el) el.remove();
+}
+
+function logDecrypt(msg, cls) {
+  var el = $('decrypt-log');
+  if (!el) {
+    var btn = document.querySelector('button[onclick="doDecrypt()"]');
+    if (!btn) return;
+    var row = btn.closest('.action-row') || btn.parentNode;
+    el = document.createElement('div');
+    el.id = 'decrypt-log';
+    row.parentNode.insertBefore(el, row.nextSibling);
+  }
+  el.innerHTML += '<div class="log-line' + (cls ? ' ' + cls : '') + '">' + msg + '</div>';
+  el.scrollTop = el.scrollHeight;
+}
+
+function clearDecryptLog() {
+  var el = $('decrypt-log');
   if (el) el.remove();
 }
 
@@ -595,26 +1334,39 @@ async function doEncrypt() {
 
 async function doDecrypt() {
   clearResult('dec-result');
+  clearDecryptLog();
   var amount = $('dec-amount').value.trim();
-    if (!amount || !/^\d+(\.\d{1,6})?$/.test(amount) || parseFloat(amount) <= 0) { showResult('dec-result', false, 'invalid amount'); return; }
-    var needRaw = Math.round(parseFloat(amount) * 1000000);
-    if (_encryptedBalanceRaw <= 0) { showResult('dec-result', false, 'no encrypted balance to decrypt'); return; }
-    if (needRaw > _encryptedBalanceRaw) { showResult('dec-result', false, 'insufficient encrypted balance: have ' + fmtOct(_encryptedBalanceRaw) + ', need ' + amount + ' oct'); return; }
-    if (!validateFee('dec-fee', 'decrypt')) { feeError('dec-result', 'dec-fee', 'decrypt'); return; }
+  if (!amount || !/^\d+(\.\d{1,6})?$/.test(amount) || parseFloat(amount) <= 0) { logDecrypt('error: invalid amount', 'log-err'); return; }
+  var needRaw = Math.round(parseFloat(amount) * 1000000);
+  if (_encryptedBalanceRaw <= 0) { logDecrypt('error: no encrypted balance to decrypt', 'log-err'); return; }
+  if (needRaw > _encryptedBalanceRaw) { logDecrypt('error: insufficient encrypted balance: have ' + fmtOct(_encryptedBalanceRaw) + ', need ' + amount + ' oct', 'log-err'); return; }
+  if (!validateFee('dec-fee', 'decrypt')) { logDecrypt('error: invalid fee - must be integer >= ' + ((_fees.decrypt && _fees.decrypt.minimum) || '?'), 'log-err'); return; }
+  logDecrypt('initiating decrypt...', 'log-info');
+  logDecrypt('amount: ' + amount + ' oct', 'log-info');
+  logDecrypt('', '');
   try {
     var decBody = { amount: amount };
     var decFee = $('dec-fee') ? $('dec-fee').value.trim() : '';
     if (decFee) decBody.ou = decFee;
     var res = await api('POST', '/decrypt', decBody);
-    var txHash = res.hash || res.tx_hash || '';
-    showResult('dec-result', true, 'decrypted ' + amount + ' oct - tx: ' + txLink(txHash));
+    if (res.steps) {
+      for (var i = 0; i < res.steps.length; i++) logDecrypt(res.steps[i], 'log-info');
+    }
+    logDecrypt('', '');
+    logDecrypt('decrypt complete', 'log-ok');
+    if (res.hash || res.tx_hash) logDecrypt('tx: ' + txLink(res.hash || res.tx_hash), 'log-ok');
     $('dec-amount').value = '';
     loadDashboard();
     refreshEncryptBalances();
   } catch (e) {
-    showResult('dec-result', false, e.message);
+    logDecrypt('error: ' + e.message, 'log-err');
   }
 }
+
+
+
+
+
 
 async function doStealthSend() {
   clearStealthLog();
@@ -758,7 +1510,7 @@ function escapeHtmlCode(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-var _amlRe = /(\/\*[\s\S]*?\*\/)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\b(?:contract|state|constructor|fn|view|let|if|else|while|for|in|return|assert|require|match|const|struct|enum|true|false)\b)|(\b(?:string|int|bool|address|bytes|cipher|pubkey|map|list)\b)|(\b(?:self_addr|transfer|call|to_int|checkpoint|rollback|commit|origin|caller|balance|emit|log|value|epoch|min|max|abs|concat|to_string|len)\b)|(\bself\b)|(\b[0-9]+\b)|([+\-*\/]=|[=!<>]=|&&|\|\||->|[+\-*\/%<>=!])/g;
+var _amlRe = /(\/\*[\s\S]*?\*\/)|(\/\/[^\n]*)|("(?:[^"\\]|\\.)*")|(\b(?:contract|state|constructor|fn|view|let|if|else|while|for|in|return|assert|require|match|const|struct|enum|true|false|payable|nonreentrant|public|private|internal|event|error|import|interface|implements|indexed)\b)|(\b(?:string|int|bool|address|bytes|cipher|pubkey|map|list|void)\b)|(\b(?:self_addr|transfer|call|to_int|checkpoint|rollback|commit|origin|caller|balance|emit|log|value|epoch|min|max|abs|concat|to_string|len|split|join|replace|pow|sha256|keccak256|is_address|assert_address|starts_with|substr|index_of|bit_and|bit_or|bit_xor|parse_ints|mget|mset|blob_store|blob_load|some|none|is_some_opt|unwrap|fhe_load_pk|fhe_add|fhe_sub|fhe_scale|fhe_add_const|fhe_sub_const|fhe_verify_zero|fhe_verify_range|fhe_verify_bound|fhe_commit|fhe_pedersen|fhe_ser|fhe_deser)\b)|(\bself\b)|(\b[0-9]+\b)|([+\-*\/]=|[=!<>]=|&&|\|\||->|\?|[+\-*\/%<>=!])/g;
 
 function highlightAml(src) {
   _amlRe.lastIndex = 0;
@@ -825,6 +1577,13 @@ function editorUpdate() {
   hl.innerHTML = lang === 'aml' ? highlightAml(src) : highlightAsm(src);
   updateGutter(src);
   editorSync();
+  if (_ideProject && _ideActiveFile) {
+    _ideFiles[_ideActiveFile] = src;
+    if (_ideSaveTimer) clearTimeout(_ideSaveTimer);
+    _ideSaveTimer = setTimeout(function() {
+      ProjectStore.saveFile(_ideProject.id, _ideActiveFile, src).catch(function() {});
+    }, 2000);
+  }
 }
 
 function editorSync() {
@@ -867,22 +1626,23 @@ function initEditor() {
 
 function onLangChange() {
   var lang = $('ct-lang').value;
+  var ta = $('ct-source');
   if (lang === 'aml') {
     $('ct-source-label').textContent = 'AppliedML source (.aml)';
-    $('ct-source').placeholder = 'contract Token {\n  state { name: string }\n  constructor(n: string) {\n    self.name = n\n  }\n}';
+    ta.placeholder = 'contract Token {\n  state { name: string }\n  constructor(n: string) {\n    self.name = n\n  }\n}';
   } else {
     $('ct-source-label').textContent = 'assembly source (.oasm)';
-    $('ct-source').placeholder = '; constructor\nCALLER r0\nSSTORE "owner", r0\nSTOP\n; dispatcher\nJDEST 100\n...';
+    ta.placeholder = '; constructor\nCALLER r0\nSSTORE "owner", r0\nSTOP\n; dispatcher\nJDEST 100\n...';
   }
+  ta.value = '';
   editorUpdate();
 }
 
 async function doCompile() {
+  if (_ideProject) { doCompileProject(); return; }
   clearResult('ct-compile-result');
   editorClearError();
   _compiledAbi = null;
-  var abiDiv = $('ct-abi-display');
-  if (abiDiv) abiDiv.style.display = 'none';
   var source = $('ct-source').value;
   var lang = $('ct-lang').value;
   if (!source.trim()) { showResult('ct-compile-result', false, 'source required'); return; }
@@ -896,17 +1656,154 @@ async function doCompile() {
     showResult('ct-compile-result', true, msg);
     if (res.abi) {
       _compiledAbi = res.abi;
-      if (abiDiv) {
-        $('ct-abi-json').textContent = JSON.stringify(res.abi, null, 2);
-        abiDiv.style.display = '';
-      }
+      var abiEl = $('ct-abi-json');
+      if (abiEl) abiEl.textContent = JSON.stringify(res.abi, null, 2);
     }
+    if (res.disasm) {
+      var disEl = $('ct-disasm-code');
+      if (disEl) disEl.innerHTML = highlightDisasm(res.disasm);
+    }
+    showBottomPanels();
+    consoleLog('info', msg);
   } catch (e) {
     var errMsg = e.message || '';
     var lineMatch = errMsg.match(/line\s+(\d+)/i);
     if (lineMatch) editorMarkError(parseInt(lineMatch[1], 10));
     showResult('ct-compile-result', false, errMsg);
+    consoleLog('error', 'compile error: ' + errMsg);
   }
+}
+
+function switchBottomTab(panel) {
+  var tabs = document.querySelectorAll('.ide-bottom-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].classList.toggle('active', tabs[i].getAttribute('data-panel') === panel);
+  }
+  var panels = document.querySelectorAll('.ide-bottom-panel');
+  for (var i = 0; i < panels.length; i++) {
+    var id = panels[i].id.replace('ct-','').replace('-display','');
+    panels[i].style.display = id === panel ? 'block' : 'none';
+    panels[i].classList.toggle('active', id === panel);
+  }
+}
+
+function showBottomPanels() {
+  var panels = document.querySelectorAll('.ide-bottom-panel');
+  var activePanel = null;
+  var tabs = document.querySelectorAll('.ide-bottom-tab');
+  for (var i = 0; i < tabs.length; i++) {
+    if (tabs[i].classList.contains('active')) { activePanel = tabs[i].getAttribute('data-panel'); break; }
+  }
+  if (!activePanel) activePanel = 'abi';
+  switchBottomTab(activePanel);
+}
+
+var _consoleLogs = [];
+function consoleLog(level, msg) {
+  var ts = new Date().toLocaleTimeString();
+  _consoleLogs.push({ level: level, msg: msg, ts: ts });
+  if (_consoleLogs.length > 200) _consoleLogs.shift();
+  renderConsole();
+}
+
+function consoleClear() {
+  _consoleLogs = [];
+  renderConsole();
+}
+
+function renderConsole() {
+  var el = $('ct-console-output');
+  if (!el) return;
+  var html = '';
+  for (var i = 0; i < _consoleLogs.length; i++) {
+    var l = _consoleLogs[i];
+    html += '<div class="console-line ' + l.level + '">' +
+      '<span class="timestamp">' + escapeHtml(l.ts) + '</span>' +
+      '<span class="label">[' + l.level.toUpperCase() + ']</span> ' +
+      escapeHtml(l.msg) + '</div>';
+  }
+  el.innerHTML = html || '<div class="console-line info" style="color:#666">no output yet</div>';
+  el.scrollTop = el.scrollHeight;
+}
+
+function highlightDisasm(src) {
+  var lines = src.split('\n');
+  var html = '';
+  for (var i = 0; i < lines.length; i++) {
+    var line = escapeHtml(lines[i]);
+    line = line.replace(/(;.*)$/, '<span class="cmt">$1</span>');
+    line = line.replace(/("(?:[^"\\]|\\.)*")/g, '<span class="str">$1</span>');
+    line = line.replace(/\b(r[0-9]{1,2})\b/g, '<span class="reg">$1</span>');
+    line = line.replace(/\b(\-?[0-9]+)\b/g, '<span class="num">$1</span>');
+    line = line.replace(/^(\s*)(JDEST)/, '$1<span class="lbl">$2</span>');
+    line = line.replace(/^(\s*)([A-Z_]{2,})/, '$1<span class="op">$2</span>');
+    html += line + '\n';
+  }
+  return html;
+}
+
+async function loadTemplate() {
+  var sel = $('ct-template');
+  if (!sel) return;
+  var key = sel.value;
+  if (!key) return;
+  try {
+    var r = await fetch('templates/' + key + '/main.aml');
+    if (!r.ok) return;
+    var source = await r.text();
+    var ta = $('ct-source');
+    if (ta) { ta.value = source; editorUpdate(); }
+  } catch (e) {}
+  sel.value = '';
+}
+
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    var devView = $('view-dev');
+    if (devView && devView.classList.contains('active')) {
+      e.preventDefault();
+      doCompile();
+    }
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    var devView = $('view-dev');
+    if (devView && devView.classList.contains('active')) {
+      e.preventDefault();
+      doDeploy();
+    }
+  }
+});
+
+var _liveCompileTimer = null;
+var _liveCompileEnabled = true;
+function editorUpdateWithLiveCompile() {
+  editorUpdate();
+  if (!_liveCompileEnabled) return;
+  if (_liveCompileTimer) clearTimeout(_liveCompileTimer);
+  _liveCompileTimer = setTimeout(function() {
+    var source = $('ct-source').value;
+    if (source.trim().length > 10) doCompile();
+  }, 1500);
+}
+
+function updateStorageView(storage) {
+  var el = $('ct-storage-output');
+  if (!el || !storage) return;
+  var keys = Object.keys(storage).sort();
+  if (keys.length === 0) {
+    el.innerHTML = '<div style="color:#666">no storage entries</div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var v = storage[k];
+    if (typeof v === 'string' && v.length > 80) v = v.slice(0, 80) + '...';
+    html += '<div class="storage-row"><span class="storage-key">' +
+      escapeHtml(k) + '</span><span class="storage-val">' +
+      escapeHtml(String(v)) + '</span></div>';
+  }
+  el.innerHTML = html;
 }
 
 async function doPreviewDeploy() {
@@ -922,15 +1819,17 @@ async function doPreviewDeploy() {
   }
 }
 
-function verifySourceRetry(addr, source, attempts) {
+function verifySourceRetry(addr, source, depFiles, attempts) {
   if (attempts <= 0) return;
   setTimeout(async function() {
     try {
-      await api('POST', '/contract/verify', { address: addr, source: source });
+      var payload = { address: addr, source: source };
+      if (depFiles && depFiles.length > 0) payload.files = depFiles;
+      await api('POST', '/contract/verify', payload);
       showResult('ct-deploy-result', true,
-        'deployed to <span class="mono">' + escapeHtml(addr) + '</span> — <strong>source verified</strong>');
+        'deployed to <span class="mono">' + escapeHtml(addr) + '</span> - <strong>source verified</strong>');
     } catch (e) {
-      verifySourceRetry(addr, source, attempts - 1);
+      verifySourceRetry(addr, source, depFiles, attempts - 1);
     }
   }, 12000);
 }
@@ -956,11 +1855,17 @@ async function doDeploy() {
     var addr = res.contract_address || '';
     var hash = res.tx_hash || '';
     showResult('ct-deploy-result', true,
-      'deployed to <span class="mono">' + escapeHtml(addr) + '</span> — tx: ' + txLink(hash) + ' (verifying source...)');
+      'deployed to <span class="mono">' + escapeHtml(addr) + '</span> - tx: ' + txLink(hash) + ' (verifying source...)');
     $('ct-call-addr').value = addr;
     $('ct-info-addr').value = addr;
-    var source = $('ct-source').value || '';
-    if (source.trim()) verifySourceRetry(addr, source, 5);
+    var source = _ideProject ? (_ideFiles['main.aml'] || '') : ($('ct-source').value || '');
+    var depFiles = [];
+    if (_ideProject) {
+      for (var path in _ideFiles) {
+        if (path !== 'main.aml') depFiles.push({ path: path, source: _ideFiles[path] });
+      }
+    }
+    if (source.trim()) verifySourceRetry(addr, source, depFiles, 5);
     loadDashboard();
   } catch (e) {
     showResult('ct-deploy-result', false, e.message);
@@ -993,10 +1898,12 @@ async function doContractCall() {
     if (callFee) callBody.ou = callFee;
     var res = await api('POST', '/contract/call', callBody);
     var hash = res.tx_hash || '';
-    showResult('ct-call-result', true, 'call submitted — tx: ' + txLink(hash));
+    showResult('ct-call-result', true, 'call submitted - tx: ' + txLink(hash));
+    consoleLog('event', 'call ' + method + '() → tx ' + (hash ? hash.slice(0,16) + '...' : ''));
     loadDashboard();
   } catch (e) {
     showResult('ct-call-result', false, e.message);
+    consoleLog('error', 'call ' + method + '() failed: ' + e.message);
   }
 }
 
@@ -1051,11 +1958,20 @@ async function doContractView() {
       showResult('ct-call-result', true,
         'result (encrypted): <span class="mono">' + escapeHtml(String(val)).substring(0, 40) + '...</span>' +
         '<br>decrypted: <span class="mono" style="color:#0f0;font-size:1.1em">' + decrypted + '</span>');
+      consoleLog('log', 'view ' + method + '() → ' + decrypted + ' (decrypted)');
     } else {
       showResult('ct-call-result', true, 'result: <span class="mono">' + escapeHtml(String(val)) + '</span>');
+      consoleLog('log', 'view ' + method + '() → ' + String(val));
+    }
+    if (res.storage) updateStorageView(res.storage);
+    if (res.events && res.events.length > 0) {
+      for (var i = 0; i < res.events.length; i++) {
+        consoleLog('event', 'emit ' + res.events[i].name + '(' + (res.events[i].args || []).join(', ') + ')');
+      }
     }
   } catch (e) {
     showResult('ct-call-result', false, e.message);
+    consoleLog('error', 'view ' + method + '() failed: ' + e.message);
   }
 }
 
@@ -1128,6 +2044,7 @@ async function doContractReceipt() {
 }
 
 async function doVerifyContract() {
+  if (_ideProject) { doVerifyProject(); return; }
   clearResult('ct-verify-result');
   var addr = $('ct-verify-addr').value.trim();
   var source = $('ct-verify-source').value;
@@ -1136,7 +2053,7 @@ async function doVerifyContract() {
   try {
     var res = await api('POST', '/contract/verify', { address: addr, source: source });
     showResult('ct-verify-result', true,
-      'source verified — code_hash: <span class="mono">' + escapeHtml(res.code_hash || '') + '</span>');
+      'source verified - code_hash: <span class="mono">' + escapeHtml(res.code_hash || '') + '</span>');
   } catch (e) {
     showResult('ct-verify-result', false, e.message);
   }
@@ -1992,7 +2909,7 @@ async function init() {
       return;
     }
     if (st.has_legacy) {
-      $('modal-sub').textContent = 'migrating wallet — set a PIN';
+      $('modal-sub').textContent = 'migrating wallet - set a PIN';
       showPinSetup('migrate');
       $('modal-overlay').style.display = 'flex';
       return;

@@ -341,6 +341,12 @@ int main(int argc, char** argv) {
     svr.set_read_timeout(300, 0);
     svr.set_write_timeout(300, 0);
 
+
+    //
+    svr.set_keep_alive_timeout(5);
+    svr.set_keep_alive_max_count(100);
+    //
+
     svr.set_post_routing_handler([](const httplib::Request&, httplib::Response& res) {
         res.set_header("X-Frame-Options", "DENY");
         res.set_header("X-Content-Type-Options", "nosniff");
@@ -1183,10 +1189,15 @@ int main(int argc, char** argv) {
             return;
         }
         ensure_pvac_registered();
+        json steps = json::array();
+
+        steps.push_back("[1/5] FHE encrypt amount (PVAC-HFHE)");
         uint8_t seed[32];
         octra::random_bytes(seed, 32);
         pvac_cipher ct = g_pvac.encrypt((uint64_t)raw, seed);
         std::string cipher_str = g_pvac.encode_cipher(ct);
+
+        steps.push_back("[2/5] bound zero proof");
 
         uint8_t blinding[32];
         octra::random_bytes(blinding, 32);
@@ -1195,6 +1206,8 @@ int main(int argc, char** argv) {
         pvac_zero_proof zkp = g_pvac.make_zero_proof_bound(ct, (uint64_t)raw, blinding);
         std::string zp_str = g_pvac.encode_zero_proof(zkp);
         g_pvac.free_zero_proof(zkp);
+
+        steps.push_back("[3/5] range proof");
 
         pvac_cipher current_ct = g_pvac.decode_cipher(eb.cipher);
         pvac_cipher new_bal_ct = pvac_ct_sub(g_pvac.pk(), current_ct, ct);
@@ -1218,6 +1231,8 @@ int main(int argc, char** argv) {
         enc_data["blinding"] = octra::base64_encode(blinding, 32);
         enc_data["range_proof_balance"] = rp_bal_str;
 
+        steps.push_back("[4/5] building decrypt transaction");
+
         auto bi = get_nonce_balance(); int nonce = bi.nonce;
         octra::Transaction tx;
         tx.from = g_wallet.addr;
@@ -1230,6 +1245,10 @@ int main(int argc, char** argv) {
         tx.encrypted_data = enc_data.dump();
         sign_tx_fields(tx);
         auto result = submit_tx(tx);
+
+        steps.push_back("[5/5] submitted to node");
+        result["steps"] = steps;
+
         if (result.contains("error")) res.status = 500;
         res.set_content(result.dump(), "application/json");
     });
@@ -1656,6 +1675,48 @@ int main(int argc, char** argv) {
         j["instructions"] = r.result.value("instructions", 0);
         j["version"] = r.result.value("version", "");
         if (r.result.contains("abi")) j["abi"] = r.result["abi"];
+        if (r.result.contains("disasm")) j["disasm"] = r.result["disasm"];
+        res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& ex) {
+            res.status = 500;
+            res.set_content(err_json(std::string("internal error: ") + ex.what()).dump(), "application/json");
+        } catch (...) {
+            res.status = 500;
+            res.set_content(err_json("internal error").dump(), "application/json");
+        }
+    });
+
+    svr.Post("/api/contract/compile-project", [](const httplib::Request& req, httplib::Response& res) {
+        WALLET_GUARD
+        try {
+        json body;
+        try { body = json::parse(req.body); } catch (...) {
+            res.status = 400;
+            res.set_content(err_json("invalid json").dump(), "application/json");
+            return;
+        }
+        auto files = body.value("files", json::array());
+        std::string main_path = body.value("main", "main.aml");
+        if (files.empty()) {
+            res.status = 400;
+            res.set_content(err_json("files required").dump(), "application/json");
+            return;
+        }
+        auto r = g_rpc.compile_aml_multi(files, main_path);
+        if (!r.ok) {
+            res.status = 400;
+            std::string safe_err = r.error;
+            for (auto& ch : safe_err) { if ((unsigned char)ch > 127) ch = '?'; }
+            res.set_content(err_json(safe_err).dump(), "application/json");
+            return;
+        }
+        json j;
+        j["bytecode"] = r.result.value("bytecode", "");
+        j["size"] = r.result.value("size", 0);
+        j["instructions"] = r.result.value("instructions", 0);
+        j["version"] = r.result.value("version", "");
+        if (r.result.contains("abi")) j["abi"] = r.result["abi"];
+        if (r.result.contains("disasm")) j["disasm"] = r.result["disasm"];
         res.set_content(j.dump(), "application/json");
         } catch (const std::exception& ex) {
             res.status = 500;
@@ -1759,7 +1820,11 @@ int main(int argc, char** argv) {
             res.set_content(err_json("address and source required").dump(), "application/json");
             return;
         }
-        auto r = g_rpc.call("contract_verify", nlohmann::json::array({addr, source}), 15);
+        nlohmann::json verify_params = nlohmann::json::array({addr, source});
+        if (body.contains("files") && body["files"].is_array()) {
+            verify_params.push_back(body["files"]);
+        }
+        auto r = g_rpc.call("contract_verify", verify_params, 15);
         if (!r.ok) {
             res.status = 400;
             std::string safe_err = r.error;
